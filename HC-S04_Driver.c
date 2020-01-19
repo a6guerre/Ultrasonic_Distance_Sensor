@@ -3,6 +3,7 @@
 #include <stdbool.h>
 #include <math.h>
 #include "inc/tm4c123gh6pm.h"
+#include "HC-S04_Driver.h"
 #include "inc/hw_memmap.h"
 #include "inc/hw_types.h"
 #include "inc/hw_ints.h"
@@ -13,35 +14,29 @@
 #include "driverlib/pin_map.h"
 #include "driverlib/uart.h"
 
-#define NVIC_PRI5_TIME1AB_MASK 0xFF0000FF
-#define SPEED_SOUND 34300          // Speed of sound in cm/s
-#define CLOCK_TICK  0.00000008     // Clock tick time for 12.5MHz oscillator
-
 uint16_t hi;
 uint16_t pulseWidth = 0; // Needs to be this data type to be congruent with register values.
 uint16_t risingEdge;
 uint16_t distanceCM;
-void Timer1AB_Init(void);
-void TriggerSignalEnable(void);
-void EnableEdgeModeTimers(void);
-void UART_Init(void);
-void UART_OutChar(unsigned char data);
-void UART_OutUDec(unsigned long n);
 
 unsigned int overFlowCount;
 unsigned int risingEdgeMeasured = 0;
 int measured = 0;
 int count;
+
 int main(void)
 {
     SysCtlClockSet(SYSCTL_SYSDIV_16| SYSCTL_USE_PLL | SYSCTL_XTAL_16MHZ |SYSCTL_OSC_MAIN); //Set up clock to run at 12.5MHz
-    EnableEdgeModeTimers();
-    UART_Init();
-    TriggerSignalEnable();
-    Timer1AB_Init();
+    Initialize_HCS04();
+    Distance_Measure_Enable();
     IntMasterEnable();
     while(1){
-        ++count;
+      ++count;
+      if(measured)
+      {
+         Restart_measurement();
+         measured = 0;
+      }
     }
     return 0;
 }
@@ -77,7 +72,7 @@ void UART_OutUDec(unsigned long n){
 void TriggerSignalEnable(){
     SYSCTL_RCGC2_R |= 0x01;
     GPIO_PORTA_PCTL_R &= ~0x00000F00; // 3) regular GPIO
-    GPIO_PORTA_AMSEL_R &= ~0x80;      // 4) disable analog function on PA2
+    GPIO_PORTA_AMSEL_R &= ~0x80;      // 4) disable analog function on PA7
     GPIO_PORTA_DIR_R |= 0x80;        // 5) set direction to output
     GPIO_PORTA_AFSEL_R &= ~0x80;      // 6) regular port function
     GPIO_PORTA_DEN_R |= 0x80;         // 7) enable digital port
@@ -112,7 +107,7 @@ void Timer1AB_Init(void){
   TIMER1_CFG_R =  0x00000004;              // configure for 16-bit timer mode
   TIMER1_TAMR_R = 0x00000001;              // configure for one shot
   TIMER1_TBMR_R = 0x00000001;              // Configure as a one shot timer
-  TIMER1_TAILR_R =  100;                  // The "period" of the trigger signal, (could try to make it smaller)
+  TIMER1_TAILR_R =  100;                   // The "period" of the trigger signal, (could try to make it smaller)
   TIMER1_TBILR_R =  10;                    // So that trigger signal is at least 10usec
   TIMER1_TAPR_R =   1;                     // No Prescaler
   TIMER1_TBPR_R =   1;
@@ -122,6 +117,17 @@ void Timer1AB_Init(void){
   NVIC_EN0_R |= 0x00600000;                 // enable interrupt 19 in NVIC
   TIMER1_CTL_R |= 0x00000101;               // enable timer1A and timer 1B
   GPIO_PORTA_DATA_R |= 0x80;                // Enable trigger signal
+}
+
+void Distance_Measure_Enable()
+{
+   TIMER1_CTL_R |= 0x00000101;               // enable timer1A and timer 1B, trigger signal generators
+}
+
+void Restart_measurement()
+{
+   TIMER0_CTL_R &= ~0x00000001;      // Input capture until trigger signal enable again.
+   TIMER1_CTL_R |= 0x01;             //  "Schedule" start trigger after TIME1A Timeout
 }
 
 void Timer0A_Handler(void){
@@ -139,11 +145,10 @@ void Timer0A_Handler(void){
          UART_OutUDec(distanceCM);
          UART_OutChar('\n');
          count = 0;
-         measured = 0;
+         //measured = 0;
       }
       overFlowCount = 0;
-      TIMER0_CTL_R &= ~0x00000001;      // Input capture until trigger signal enable again.
-      TIMER1_CTL_R |= 0x01;             //  "Schedule" start trigger after TIME1A Timeout
+      //Restart_measurement();
    }
 }
 
@@ -157,6 +162,7 @@ void Timer1A_Handler(void){
     GPIO_PORTA_DATA_R = 0x80;
     TIMER1_CTL_R |= 0x00000100; // Re enable one shot timer
 }
+
 void Timer1B_Handler(void){
     TIMER1_ICR_R = TIMER_ICR_TBTOCINT;
     GPIO_PORTA_DATA_R &= ~0x80;
@@ -166,8 +172,17 @@ void Timer1B_Handler(void){
     TIMER0_CTL_R |=  0x00000101;      // enable timer0A and timer 0B
     GPIO_PORTA_DATA_R &= ~0x80;
 }
+
 void Timer2A_Handler(void){
-    TIMER2_ICR_R  = TIMER_ICR_TATOCINT;
-    TIMER2_CTL_R |= 0x00000001;
-    ++overFlowCount;
+   TIMER2_ICR_R  = TIMER_ICR_TATOCINT;
+   TIMER2_CTL_R |= 0x00000001;
+   ++overFlowCount;
+}
+
+void Initialize_HCS04(void)
+{
+    EnableEdgeModeTimers();
+    UART_Init();
+    TriggerSignalEnable();
+    Timer1AB_Init();
 }
